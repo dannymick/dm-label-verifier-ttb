@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: label-verifier-api
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.13
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: uvicorn[standard]<1,>=0.34
+Requires-Dist: pillow<12,>=11
+Requires-Dist: pytesseract==0.3.13
+Requires-Dist: python-multipart<1,>=0.0.20
+
+# Label verifier API
+
+FastAPI service for the Alcohol Label Verifier prototype. See the repository README for local setup, deployment, and known limits.
