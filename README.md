@@ -21,6 +21,15 @@ NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
 
 Install Tesseract with English language data before running the API. On macOS, `brew install tesseract` installs it. Run backend tests with `uv run pytest` and build the web application with `npm run build`.
 
+Create synthetic manual-test labels with:
+
+```bash
+cd label-verifier-api
+uv run python scripts/generate_sample_labels.py
+```
+
+Upload `samples/01-perfect-match.png` with the default application form. The remaining images intentionally contain an ABV mismatch, volume mismatch, title-case warning heading, or slight rotation.
+
 ## Deployment
 
 Deploy `label-verifier-web` to Vercel and set `NEXT_PUBLIC_API_URL` to the Railway API URL at build time. Deploy `label-verifier-api` as a Railway Docker service, using its `Dockerfile`, service root, and `/health` as the healthcheck. Add the Vercel URL to the backend CORS allowlist before deployment.

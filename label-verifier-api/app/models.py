@@ -42,3 +42,13 @@ class AnalysisResult(BaseModel):
     ocr_text: str
     fields: list[FieldResult]
     limitations: list[str]
+
+
+class BatchItem(BaseModel):
+    filename: str
+    result: AnalysisResult | None = None
+    error: str | None = None
+
+
+class BatchResult(BaseModel):
+    items: list[BatchItem]

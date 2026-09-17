@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from difflib import SequenceMatcher
 from io import BytesIO
 
@@ -75,7 +74,7 @@ def preprocess(data: bytes) -> Image.Image:
 def ocr(image: Image.Image) -> tuple[str, list[str]]:
     try:
         data = pytesseract.image_to_data(
-            image, config="--oem 1 --psm 6", lang="eng", timeout=7, output_type=pytesseract.Output.DICT
+            image, config="--oem 1 --psm 11", lang="eng", timeout=7, output_type=pytesseract.Output.DICT
         )
     except RuntimeError as exc:
         raise OcrError("OCR timed out or failed.") from exc
@@ -109,7 +108,8 @@ def text_result(field: str, expected: str, lines: list[str], brand: bool = False
     if brand:
         equal = normalize_brand(observed) == normalize_brand(expected)
     elif field == "country_of_origin":
-        equal = normalize_country(observed) == normalize_country(expected)
+        expected_country = normalize_country(expected)
+        equal = expected_country == normalize_country(observed) or expected_country in normalize_text(observed)
     else:
         equal = normalize_text(observed) == normalize_text(expected)
     if equal:
@@ -134,7 +134,7 @@ def numeric_result(field: str, expected: str, text: str, parser) -> FieldResult:
 
 
 def warning_result(text: str) -> FieldResult:
-    heading = re.search(r"(?:GOVERNMENT|Government|government)\s+WARNING\s*:", text)
+    heading = re.search(r"GOVERNMENT\s+WARNING\s*:", text, re.I)
     if not heading:
         return FieldResult(field="government_warning", expected=GOVERNMENT_WARNING, observed=None, status=FieldStatus.MISSING, reason="The GOVERNMENT WARNING heading was not found.")
     observed = text[heading.start() :]

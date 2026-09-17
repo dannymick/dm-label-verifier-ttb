@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.models import AnalysisResult, ApplicationData, FieldStatus
+from app.models import AnalysisResult, ApplicationData, BatchItem, BatchResult, FieldStatus
 from app.services import OcrError, compare, ocr, preprocess
 
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +21,16 @@ app = FastAPI(title="Alcohol Label Verifier")
 allowed_origins = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_methods=["GET", "POST"], allow_headers=["*"], max_age=600)
 lock = asyncio.Lock()
+MAX_FILE_BYTES = 5 * 1024 * 1024
+MAX_BATCH_BYTES = 20 * 1024 * 1024
+MAX_BATCH_FILES = 20
+
+
+class UploadError(ValueError):
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status = status
+        self.code = code
 
 
 def error(status: int, code: str, message: str) -> JSONResponse:
@@ -37,33 +47,87 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/analyze", response_model=AnalysisResult)
-async def analyze(image: UploadFile = File(...), application: str = Form(...)):
-    if lock.locked():
-        return error(503, "service_busy", "Another label is being analyzed. Please try again in a moment.")
-    if image.content_type not in {"image/jpeg", "image/png"}:
-        return error(415, "unsupported_image", "Upload a JPEG or PNG image under 5 MiB.")
+def parse_application(application: str) -> ApplicationData | None:
     try:
-        metadata = ApplicationData.model_validate(json.loads(application))
+        return ApplicationData.model_validate(json.loads(application))
     except (json.JSONDecodeError, ValidationError):
-        return error(422, "invalid_application", "Check the application details and try again.")
+        return None
+
+
+async def read_image(image: UploadFile) -> bytes:
+    if image.content_type not in {"image/jpeg", "image/png"}:
+        raise UploadError(415, "unsupported_image", "Upload a JPEG or PNG image under 5 MiB.")
     upload = await image.read()
-    if len(upload) > 5 * 1024 * 1024:
-        return error(413, "file_too_large", "Upload an image smaller than 5 MiB.")
+    if len(upload) > MAX_FILE_BYTES:
+        raise UploadError(413, "file_too_large", "Upload an image smaller than 5 MiB.")
+    return upload
+
+
+async def analyze_upload(upload: bytes, metadata: ApplicationData) -> AnalysisResult:
     started = time.perf_counter()
-    async with lock:
-        try:
-            image_data = await asyncio.to_thread(preprocess, upload)
-            text, lines = await asyncio.to_thread(ocr, image_data)
-            fields = compare(metadata, text, lines)
-        except ValueError as exc:
-            return error(422, "invalid_image", str(exc))
-        except OcrError as exc:
-            return error(422, "ocr_failed", str(exc))
-        finally:
-            await image.close()
+    image_data = await asyncio.to_thread(preprocess, upload)
+    text, lines = await asyncio.to_thread(ocr, image_data)
+    fields = compare(metadata, text, lines)
     elapsed = round((time.perf_counter() - started) * 1000)
     logger.info("analysis_complete processing_ms=%s image=%sx%s", elapsed, image_data.width, image_data.height)
     statuses = {field.status for field in fields}
     overall = FieldStatus.MISMATCH if FieldStatus.MISMATCH in statuses else FieldStatus.REVIEW if statuses & {FieldStatus.REVIEW, FieldStatus.MISSING} else FieldStatus.MATCH
-    return JSONResponse(content=AnalysisResult(overall_status=overall, processing_ms=elapsed, ocr_text=text, fields=fields, limitations=["OCR cannot verify warning boldness, type size, placement, or label completeness.", "Decorative fonts, glare, and perspective distortion may reduce OCR quality."]).model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+    return AnalysisResult(overall_status=overall, processing_ms=elapsed, ocr_text=text, fields=fields, limitations=["OCR cannot verify warning boldness, type size, placement, or label completeness.", "Decorative fonts, glare, and perspective distortion may reduce OCR quality."])
+
+
+@app.post("/analyze", response_model=AnalysisResult)
+async def analyze(image: UploadFile = File(...), application: str = Form(...)):
+    if lock.locked():
+        return error(503, "service_busy", "Another label is being analyzed. Please try again in a moment.")
+    metadata = parse_application(application)
+    if metadata is None:
+        return error(422, "invalid_application", "Check the application details and try again.")
+    try:
+        upload = await read_image(image)
+    except UploadError as exc:
+        return error(exc.status, exc.code, str(exc))
+    finally:
+        await image.close()
+    async with lock:
+        try:
+            result = await analyze_upload(upload, metadata)
+        except ValueError as exc:
+            return error(422, "invalid_image", str(exc))
+        except OcrError as exc:
+            return error(422, "ocr_failed", str(exc))
+    return JSONResponse(content=result.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/batch", response_model=BatchResult)
+async def batch(images: list[UploadFile] = File(...), application: str = Form(...)):
+    if lock.locked():
+        return error(503, "service_busy", "Another label is being analyzed. Please try again in a moment.")
+    if not 1 <= len(images) <= MAX_BATCH_FILES:
+        return error(422, "invalid_batch", "Upload between one and 20 label images.")
+    metadata = parse_application(application)
+    if metadata is None:
+        return error(422, "invalid_application", "Check the application details and try again.")
+    payloads: list[tuple[str, bytes | None, str | None]] = []
+    total_bytes = 0
+    for image in images:
+        try:
+            upload = await read_image(image)
+            total_bytes += len(upload)
+            payloads.append((image.filename or "label", upload, None))
+        except ValueError as exc:
+            payloads.append((image.filename or "label", None, str(exc)))
+        finally:
+            await image.close()
+    if total_bytes > MAX_BATCH_BYTES:
+        return error(413, "batch_too_large", "Keep total batch uploads under 20 MiB.")
+    items: list[BatchItem] = []
+    async with lock:
+        for filename, upload, upload_error in payloads:
+            if upload_error:
+                items.append(BatchItem(filename=filename, error=upload_error))
+                continue
+            try:
+                items.append(BatchItem(filename=filename, result=await analyze_upload(upload or b"", metadata)))
+            except (ValueError, OcrError) as exc:
+                items.append(BatchItem(filename=filename, error=str(exc)))
+    return JSONResponse(content=BatchResult(items=items).model_dump(mode="json"), headers={"Cache-Control": "no-store"})

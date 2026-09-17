@@ -42,3 +42,12 @@ def test_successful_analysis_returns_field_results():
         response = client.post("/analyze", data={"application": json.dumps(application)}, files={"image": ("label.png", image_bytes(), "image/png")})
     assert response.status_code == 200
     assert response.json()["overall_status"] == "match"
+
+
+def test_batch_returns_an_outcome_per_file():
+    text = "Old Tom Bourbon 45% 750 mL GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink alcoholic beverages during pregnancy because of the risk of birth defects. (2) Consumption of alcoholic beverages impairs your ability to drive a car or operate machinery, and may cause health problems."
+    files = [("images", ("one.png", image_bytes(), "image/png")), ("images", ("two.png", image_bytes(), "image/png"))]
+    with patch("app.main.ocr", return_value=(text, ["Old Tom", "Bourbon", "45%", "750 mL", text[text.index("GOVERNMENT"):]])):
+        response = client.post("/batch", data={"application": json.dumps(application)}, files=files)
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 2

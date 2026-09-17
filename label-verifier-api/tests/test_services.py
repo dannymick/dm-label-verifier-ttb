@@ -21,6 +21,8 @@ def test_abv_and_volume_parsing():
 def test_country_alias_matches():
     result = text_result("country_of_origin", "United States", ["USA"])
     assert result.status == FieldStatus.MATCH
+    result = text_result("country_of_origin", "United States", ["Product of United States"])
+    assert result.status == FieldStatus.MATCH
 
 
 def test_warning_is_strict_about_heading_and_wording():
