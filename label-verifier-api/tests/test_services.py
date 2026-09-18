@@ -1,5 +1,5 @@
 from app.models import ApplicationData, FieldStatus
-from app.services import GOVERNMENT_WARNING, parse_abv, parse_volume, text_result, warning_result
+from app.services import GOVERNMENT_WARNING, numeric_result, parse_abv, parse_volume, text_result, warning_result
 
 
 def test_brand_normalization_matches():
@@ -16,6 +16,11 @@ def test_abv_and_volume_parsing():
     assert parse_abv("90 Proof") == 45
     assert parse_abv("45.0% Alc./Vol.") == 45
     assert parse_volume("750 mL") == parse_volume("0.75 L") == 750
+
+
+def test_conflicting_abv_and_proof_requires_review():
+    result = numeric_result("alcohol_content", "45%", "45% 80 Proof", parse_abv)
+    assert result.status == FieldStatus.REVIEW
 
 
 def test_country_alias_matches():

@@ -76,7 +76,7 @@ def ocr(image: Image.Image) -> tuple[str, list[str]]:
         data = pytesseract.image_to_data(
             image, config="--oem 1 --psm 11", lang="eng", timeout=7, output_type=pytesseract.Output.DICT
         )
-    except RuntimeError as exc:
+    except (RuntimeError, pytesseract.TesseractNotFoundError) as exc:
         raise OcrError("OCR timed out or failed.") from exc
     line_words: dict[tuple[int, int, int], list[str]] = {}
     words: list[str] = []
@@ -129,6 +129,8 @@ def numeric_result(field: str, expected: str, text: str, parser) -> FieldResult:
     if not values:
         return FieldResult(field=field, expected=expected, observed=None, status=FieldStatus.MISSING, reason="No readable value was found on the label.")
     if expected_value in values:
+        if any(value != expected_value for value in values):
+            return FieldResult(field=field, expected=expected, observed=str(expected_value), status=FieldStatus.REVIEW, reason="Conflicting numeric values on the label need an agent review.")
         return FieldResult(field=field, expected=expected, observed=next(match.group(0) for match in re.finditer(numeric_pattern, text, re.I) if parser(match.group(0)) == expected_value), status=FieldStatus.MATCH, reason="Numeric value matches.")
     return FieldResult(field=field, expected=expected, observed=str(values[0]), status=FieldStatus.MISMATCH, reason="Numeric value does not match the application.")
 
